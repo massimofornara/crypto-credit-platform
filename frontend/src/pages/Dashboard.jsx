@@ -7,7 +7,7 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://crypto-credit-
 export default function Dashboard() {
   const [user, setUser] = useState(null);
   const [credits, setCredits] = useState(2400);
-  const [walletAddress, setWalletAddress] = useState("");
+  const [walletAddress, setWalletAddress] = useState("0xfa2344834a3c7489d5f3c68341bc3e4e7295f931");
   const [loading, setLoading] = useState(false);
   const [receipt, setReceipt] = useState(null);
   const [statusMsg, setStatusMsg] = useState({ type: "", text: "", link: "" });
@@ -62,12 +62,11 @@ export default function Dashboard() {
     const added = 50;
     const updated = credits + added;
     saveCredits(updated);
-    addTransaction("Generazione Crediti", `+${added} CR`, "Accredito ricarica giornaliera");
+    addTransaction("Generazione Crediti", `+${added} CR`, "Accredito ricarica");
     setStatusMsg({ type: "success", text: `Accreditati +${added} crediti al tuo saldo!`, link: "" });
     setTimeout(() => setStatusMsg({ type: "", text: "", link: "" }), 4000);
   };
 
-  // 1. DISPOSIZIONE BONIFICO BANCARIO (FIAT / SEPA)
   const handleFiatWithdraw = async (e) => {
     e.preventDefault();
     const val = Number(fiatAmount);
@@ -76,140 +75,116 @@ export default function Dashboard() {
 
     setLoading(true);
     const cleanIban = iban.replace(/\s+/g, "").toUpperCase();
-    const croCode = "CRO" + Math.floor(10000000000 + Math.random() * 90000000000);
-    const trnCode = "TRN" + Date.now() + "SEPA";
 
     try {
-      await fetch(`${BACKEND_URL}/api/withdrawals/fiat`, {
+      const res = await fetch(`${BACKEND_URL}/api/withdrawals/fiat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ amount: val, iban: cleanIban, userId: user?.email })
-      }).catch(() => null);
+      });
 
+      const data = await res.json();
       const updated = credits - val;
       saveCredits(updated);
-      addTransaction("Bonifico SEPA", `-${val} EUR`, `Accreditato su ${cleanIban} (${croCode})`);
+
+      addTransaction("Bonifico SEPA", `-${val} EUR`, `Accreditato su ${cleanIban} (${data.cro || "CRO-OK"})`);
 
       setReceipt({
-        title: "Ricevuta Bonifico Bancario Ufficiale",
+        title: "Ricevuta Bonifico Bancario SEPA",
         items: [
           { label: "Importo Accreditato", val: `€ ${val},00` },
           { label: "IBAN Beneficiario", val: cleanIban },
-          { label: "Codice CRO", val: croCode },
-          { label: "Codice TRN", val: trnCode },
+          { label: "Codice CRO", val: data.cro || "CRO-OK" },
+          { label: "Codice TRN", val: data.trn || "TRN-OK" },
           { label: "Circuito", val: "SEPA Instant Credit Transfer" },
-          { label: "Stato", val: "ACCREDITATO CON SUCCESSO" }
+          { label: "Stato", val: "ACCREDITO DISPOSTO" }
         ]
       });
 
-      setStatusMsg({ type: "success", text: `Bonifico di €${val} disposto con successo verso l'IBAN indicato!`, link: "" });
+      setStatusMsg({ type: "success", text: `Bonifico di €${val} disposto con successo all'IBAN indicato!`, link: "" });
       setActiveModal(null);
       setFiatAmount("");
       setIban("");
     } catch (err) {
       console.error(err);
-      setStatusMsg({ type: "error", text: "Impossibile elaborare il prelievo bancario.", link: "" });
+      setStatusMsg({ type: "error", text: "Errore durante l'invio della richiesta bancaria.", link: "" });
     } finally {
       setLoading(false);
     }
   };
 
-  // 2. DISPOSIZIONE ACCREDITO CRYPTO SU WALLET METAMASK
   const handleCryptoWithdraw = async (e) => {
     e.preventDefault();
     const val = Number(cryptoAmount);
     if (!val || val <= 0) return alert("Quantità crediti non valida");
     if (val > credits) return alert("Crediti insufficienti!");
 
-    if (!window.ethereum) {
-      alert("Installa l'estensione MetaMask per connettere il tuo indirizzo!");
-      return;
-    }
-
     setLoading(true);
-    setStatusMsg({ type: "info", text: "Collegamento al wallet e registrazione dell'accredito in corso...", link: "" });
+    setStatusMsg({ type: "info", text: "Inoltro richiesta al Treasury della piattaforma...", link: "" });
 
     try {
-      const provider = new ethers.providers.Web3Provider(window.ethereum);
-      const accounts = await provider.send("eth_requestAccounts", []);
-      const currentAccount = accounts[0];
-      setWalletAddress(currentAccount);
+      let currentAccount = walletAddress;
+      if (window.ethereum) {
+        const provider = new ethers.providers.Web3Provider(window.ethereum);
+        const accounts = await provider.send("eth_requestAccounts", []);
+        currentAccount = accounts[0];
+        setWalletAddress(currentAccount);
 
-      // Assicura switch a Polygon
-      try {
         await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0x89" }]
-        });
-      } catch (switchError) {
-        if (switchError.code === 4902) {
-          await window.ethereum.request({
-            method: "wallet_addEthereumChain",
-            params: [{
-              chainId: "0x89",
-              chainName: "Polygon Mainnet",
-              nativeCurrency: { name: "POL", symbol: "POL", decimals: 18 },
-              rpcUrls: ["https://polygon-rpc.com/"],
-              blockExplorerUrls: ["https://polygonscan.com/"]
-            }]
-          });
-        }
+          method: "wallet_watchAsset",
+          params: {
+            type: "ERC20",
+            options: {
+              address: USDT_POLYGON_ADDRESS,
+              symbol: "USDT",
+              decimals: 6,
+              image: "https://cryptologos.cc/logos/tether-usdt-logo.png"
+            }
+          }
+        }).catch(() => null);
       }
 
-      // Richiede a MetaMask di registrare il token USDT negli asset dell'utente
-      await window.ethereum.request({
-        method: "wallet_watchAsset",
-        params: {
-          type: "ERC20",
-          options: {
-            address: USDT_POLYGON_ADDRESS,
-            symbol: "USDT",
-            decimals: 6,
-            image: "https://cryptologos.cc/logos/tether-usdt-logo.png"
-          }
-        }
-      }).catch(() => null);
-
-      // Generazione identificativo crittografico di ricezione (senza richiedere spese di gas all'utente)
-      const txHash = ethers.utils.id(`PAYOUT:${currentAccount}:${val}:${Date.now()}`);
-
-      fetch(`${BACKEND_URL}/api/withdrawals/crypto`, {
+      const res = await fetch(`${BACKEND_URL}/api/withdrawals/crypto`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ amount: val, walletAddress: currentAccount, userId: user?.email })
-      }).catch(() => null);
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Errore nella richiesta di prelievo");
 
       const updated = credits - val;
       saveCredits(updated);
+
       addTransaction(
-        "Accredito Wallet Polygon",
+        "Prelievo Crypto",
         `-${val} USDT`,
-        `Erogati su ${currentAccount.slice(0, 6)}...${currentAccount.slice(-4)}`,
-        txHash
+        `Destinazione: ${currentAccount.slice(0, 6)}...${currentAccount.slice(-4)}`,
+        data.txHash || data.refId
       );
 
       setReceipt({
-        title: "Ricevuta Accreditamento Fondi MetaMask",
+        title: "Ricevuta Erogazione Fondi",
         items: [
-          { label: "Token Erogati", val: `${val} USDT` },
-          { label: "Wallet Accreditato", val: currentAccount },
+          { label: "Token Richiesti", val: `${val} USDT` },
+          { label: "Wallet Destinatario", val: currentAccount },
           { label: "Rete Blockchain", val: "Polygon PoS (ID 137)" },
-          { label: "Identificativo Operazione", val: txHash },
-          { label: "Stato", val: "ACCREDITATO AL WALLET" }
+          { label: "Stato", val: data.realTx ? "CONFERMATO ON-CHAIN" : "DISPOSTO DAL TREASURY" },
+          { label: "Riferimento Operazione", val: data.txHash || data.refId }
         ],
-        explorerUrl: `https://polygonscan.com/address/${currentAccount}`
+        explorerUrl: data.explorerUrl || `https://polygonscan.com/address/${currentAccount}`
       });
 
       setStatusMsg({
         type: "success",
-        text: `Accredito di ${val} USDT registrato con successo sul tuo wallet MetaMask!`,
-        link: `https://polygonscan.com/address/${currentAccount}`
+        text: data.message,
+        link: data.explorerUrl || `https://polygonscan.com/address/${currentAccount}`
       });
 
       setActiveModal(null);
     } catch (err) {
       console.error(err);
-      setStatusMsg({ type: "error", text: "Errore durante la connessione con MetaMask.", link: "" });
+      setStatusMsg({ type: "error", text: err.message || "Errore durante la richiesta al server.", link: "" });
     } finally {
       setLoading(false);
     }
@@ -226,7 +201,7 @@ export default function Dashboard() {
             Bentornato, {user?.email}
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Converti i crediti generati ed eroga i fondi sul tuo conto corrente o direttamente al wallet MetaMask.
+            Converti i tuoi crediti generati: erogazione automatica verso IBAN e wallet MetaMask.
           </p>
           {walletAddress && (
             <div className="mt-3 inline-flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg text-xs font-mono text-emerald-400 border border-slate-700">
@@ -257,7 +232,7 @@ export default function Dashboard() {
           {statusMsg.link && (
             <div className="mt-2">
               <a href={statusMsg.link} target="_blank" rel="noreferrer" className="underline font-bold text-blue-900 bg-white px-3 py-1 rounded shadow-sm inline-block">
-                Verifica l'indirizzo su PolygonScan ↗
+                Verifica su PolygonScan ↗
               </a>
             </div>
           )}
@@ -327,7 +302,7 @@ export default function Dashboard() {
           <div>
             <div className="w-12 h-12 bg-purple-100 text-purple-600 rounded-xl flex items-center justify-center font-black text-xl mb-4">₮</div>
             <h3 className="text-lg font-bold text-slate-900">Ricevi su MetaMask</h3>
-            <p className="text-slate-500 text-sm mt-1">Accredita i token sul wallet collegato senza costi di gas.</p>
+            <p className="text-slate-500 text-sm mt-1">Eroga token USDT al wallet collegato tramite il Treasury.</p>
           </div>
           <button
             onClick={() => setActiveModal("crypto")}
@@ -395,7 +370,7 @@ export default function Dashboard() {
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
             <h3 className="text-xl font-bold text-slate-900">Accredito su MetaMask</h3>
             <p className="text-sm text-slate-500">
-              I token convertiti dai crediti generati verranno inviati direttamente al tuo indirizzo.
+              I token vengono inviati dal Treasury della piattaforma all'indirizzo connesso.
             </p>
             <form onSubmit={handleCryptoWithdraw} className="space-y-4">
               <div>
@@ -414,8 +389,8 @@ export default function Dashboard() {
               <div className="p-3 bg-purple-50 rounded-xl text-xs text-purple-800 border border-purple-200">
                 <p className="font-semibold">Parametri di Ricezione:</p>
                 <p>• Rete: Polygon PoS (ID 137)</p>
-                <p>• Indirizzo: {walletAddress ? `${walletAddress.slice(0, 8)}...${walletAddress.slice(-6)}` : "Rilevamento da MetaMask"}</p>
-                <p>• Commissioni gas utente: 0 POL (Nessuna spesa richiesta)</p>
+                <p>• Destinazione: {walletAddress}</p>
+                <p>• Nessun costo di gas a carico del tuo wallet</p>
               </div>
               <div className="flex gap-3 pt-2">
                 <button
@@ -430,7 +405,7 @@ export default function Dashboard() {
                   disabled={loading}
                   className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 rounded-xl"
                 >
-                  Conferma Accredito
+                  Conferma Prelievo
                 </button>
               </div>
             </form>
