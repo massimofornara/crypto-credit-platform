@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.local
+build/
+coverage/
+serviceAccountKey.json
+.DS_Store
+cache/
+artifacts/
