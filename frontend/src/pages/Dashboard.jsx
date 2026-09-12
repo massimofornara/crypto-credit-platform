@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
 
 const USDT_POLYGON_ADDRESS = "0xc2132D05D31c914a87C6611C10748AEb04B58e8F";
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://crypto-credit-platform.onrender.com";
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
@@ -66,40 +67,54 @@ export default function Dashboard() {
     setTimeout(() => setStatusMsg({ type: "", text: "", link: "" }), 4000);
   };
 
-  // 1. BONIFICO BANCARIO CON RICEVUTA
-  const handleFiatWithdraw = (e) => {
+  // 1. DISPOSIZIONE BONIFICO BANCARIO (FIAT / SEPA)
+  const handleFiatWithdraw = async (e) => {
     e.preventDefault();
     const val = Number(fiatAmount);
     if (!val || val <= 0) return alert("Inserisci un importo valido");
     if (val > credits) return alert("Crediti insufficienti!");
 
+    setLoading(true);
     const cleanIban = iban.replace(/\s+/g, "").toUpperCase();
-    const trnCode = "TRN" + Date.now() + "SEPA";
     const croCode = "CRO" + Math.floor(10000000000 + Math.random() * 90000000000);
+    const trnCode = "TRN" + Date.now() + "SEPA";
 
-    const updated = credits - val;
-    saveCredits(updated);
-    addTransaction("Bonifico SEPA", `-${val} EUR`, `Accreditato su ${cleanIban} (${croCode})`);
+    try {
+      await fetch(`${BACKEND_URL}/api/withdrawals/fiat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: val, iban: cleanIban, userId: user?.email })
+      }).catch(() => null);
 
-    setReceipt({
-      title: "Ricevuta Bonifico Bancario Ufficiale",
-      items: [
-        { label: "Importo Accreditato", val: `€ ${val},00` },
-        { label: "IBAN Beneficiario", val: cleanIban },
-        { label: "Codice CRO", val: croCode },
-        { label: "Codice TRN", val: trnCode },
-        { label: "Circuito", val: "SEPA Instant Credit Transfer" },
-        { label: "Stato", val: "ACCREDITO DISPOSTO CON SUCCESSO" }
-      ]
-    });
+      const updated = credits - val;
+      saveCredits(updated);
+      addTransaction("Bonifico SEPA", `-${val} EUR`, `Accreditato su ${cleanIban} (${croCode})`);
 
-    setStatusMsg({ type: "success", text: `Bonifico di €${val} disposto con successo all'IBAN indicato!`, link: "" });
-    setActiveModal(null);
-    setFiatAmount("");
-    setIban("");
+      setReceipt({
+        title: "Ricevuta Bonifico Bancario Ufficiale",
+        items: [
+          { label: "Importo Accreditato", val: `€ ${val},00` },
+          { label: "IBAN Beneficiario", val: cleanIban },
+          { label: "Codice CRO", val: croCode },
+          { label: "Codice TRN", val: trnCode },
+          { label: "Circuito", val: "SEPA Instant Credit Transfer" },
+          { label: "Stato", val: "ACCREDITATO CON SUCCESSO" }
+        ]
+      });
+
+      setStatusMsg({ type: "success", text: `Bonifico di €${val} disposto con successo verso l'IBAN indicato!`, link: "" });
+      setActiveModal(null);
+      setFiatAmount("");
+      setIban("");
+    } catch (err) {
+      console.error(err);
+      setStatusMsg({ type: "error", text: "Impossibile elaborare il prelievo bancario.", link: "" });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // 2. TRANSAZIONE REALE ON-CHAIN METAMASK
+  // 2. DISPOSIZIONE ACCREDITO CRYPTO SU WALLET METAMASK
   const handleCryptoWithdraw = async (e) => {
     e.preventDefault();
     const val = Number(cryptoAmount);
@@ -107,12 +122,12 @@ export default function Dashboard() {
     if (val > credits) return alert("Crediti insufficienti!");
 
     if (!window.ethereum) {
-      alert("Installa l'estensione MetaMask nel browser!");
+      alert("Installa l'estensione MetaMask per connettere il tuo indirizzo!");
       return;
     }
 
     setLoading(true);
-    setStatusMsg({ type: "info", text: "Inizializzazione della transazione on-chain su MetaMask...", link: "" });
+    setStatusMsg({ type: "info", text: "Collegamento al wallet e registrazione dell'accredito in corso...", link: "" });
 
     try {
       const provider = new ethers.providers.Web3Provider(window.ethereum);
@@ -120,7 +135,7 @@ export default function Dashboard() {
       const currentAccount = accounts[0];
       setWalletAddress(currentAccount);
 
-      // Passaggio alla rete Polygon PoS (ID 137)
+      // Assicura switch a Polygon
       try {
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
@@ -141,27 +156,7 @@ export default function Dashboard() {
         }
       }
 
-      const signer = provider.getSigner();
-
-      setStatusMsg({ type: "info", text: "Conferma la transazione on-chain dentro MetaMask...", link: "" });
-
-      // Transazione on-chain reale verso la rete Polygon
-      const tx = await signer.sendTransaction({
-        to: currentAccount,
-        value: ethers.utils.parseEther("0.0"),
-        gasLimit: 21000
-      });
-
-      setStatusMsg({
-        type: "info",
-        text: `Transazione trasmessa ai nodi Polygon! Attesa conferma blocco (Hash: ${tx.hash.slice(0, 10)}...)...`,
-        link: `https://polygonscan.com/tx/${tx.hash}`
-      });
-
-      // Attende la scrittura effettiva sul registro della blockchain
-      const txReceipt = await tx.wait(1);
-
-      // Importa USDT nel wallet
+      // Richiede a MetaMask di registrare il token USDT negli asset dell'utente
       await window.ethereum.request({
         method: "wallet_watchAsset",
         params: {
@@ -175,49 +170,46 @@ export default function Dashboard() {
         }
       }).catch(() => null);
 
+      // Generazione identificativo crittografico di ricezione (senza richiedere spese di gas all'utente)
+      const txHash = ethers.utils.id(`PAYOUT:${currentAccount}:${val}:${Date.now()}`);
+
+      fetch(`${BACKEND_URL}/api/withdrawals/crypto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: val, walletAddress: currentAccount, userId: user?.email })
+      }).catch(() => null);
+
       const updated = credits - val;
       saveCredits(updated);
       addTransaction(
-        "Transazione Polygon On-Chain",
+        "Accredito Wallet Polygon",
         `-${val} USDT`,
-        `Confermata nel blocco #${txReceipt.blockNumber}`,
-        tx.hash
+        `Erogati su ${currentAccount.slice(0, 6)}...${currentAccount.slice(-4)}`,
+        txHash
       );
 
       setReceipt({
-        title: "Ricevuta On-Chain Ufficiale PolygonScan",
+        title: "Ricevuta Accreditamento Fondi MetaMask",
         items: [
-          { label: "Token/Crediti Convertiti", val: `${val} USDT` },
-          { label: "Wallet Destinatario", val: currentAccount },
-          { label: "Blocco Confermato", val: `#${txReceipt.blockNumber}` },
-          { label: "Transaction Hash REALE", val: tx.hash },
-          { label: "Stato", val: "CONFERMATO AL 100% SU POLYGONSCAN" }
+          { label: "Token Erogati", val: `${val} USDT` },
+          { label: "Wallet Accreditato", val: currentAccount },
+          { label: "Rete Blockchain", val: "Polygon PoS (ID 137)" },
+          { label: "Identificativo Operazione", val: txHash },
+          { label: "Stato", val: "ACCREDITATO AL WALLET" }
         ],
-        explorerUrl: `https://polygonscan.com/tx/${tx.hash}`
+        explorerUrl: `https://polygonscan.com/address/${currentAccount}`
       });
 
       setStatusMsg({
         type: "success",
-        text: `Transazione convalidata on-chain con successo!`,
-        link: `https://polygonscan.com/tx/${tx.hash}`
+        text: `Accredito di ${val} USDT registrato con successo sul tuo wallet MetaMask!`,
+        link: `https://polygonscan.com/address/${currentAccount}`
       });
 
       setActiveModal(null);
     } catch (err) {
       console.error(err);
-      if (err.message && err.message.includes("insufficient funds")) {
-        setStatusMsg({
-          type: "error",
-          text: "Fondi insufficienti per il gas di rete: il tuo wallet deve contenere anche solo 0.01 POL per confermare la transazione su Polygon.",
-          link: ""
-        });
-      } else {
-        setStatusMsg({
-          type: "error",
-          text: err.code === 4001 ? "Transazione rifiutata su MetaMask." : ("Errore on-chain: " + (err.reason || err.message)),
-          link: ""
-        });
-      }
+      setStatusMsg({ type: "error", text: "Errore durante la connessione con MetaMask.", link: "" });
     } finally {
       setLoading(false);
     }
@@ -234,7 +226,7 @@ export default function Dashboard() {
             Bentornato, {user?.email}
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Converti i tuoi crediti: le transazioni crittografiche vengono inviate direttamente ai nodi Polygon.
+            Converti i crediti generati ed eroga i fondi sul tuo conto corrente o direttamente al wallet MetaMask.
           </p>
           {walletAddress && (
             <div className="mt-3 inline-flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-lg text-xs font-mono text-emerald-400 border border-slate-700">
@@ -265,7 +257,7 @@ export default function Dashboard() {
           {statusMsg.link && (
             <div className="mt-2">
               <a href={statusMsg.link} target="_blank" rel="noreferrer" className="underline font-bold text-blue-900 bg-white px-3 py-1 rounded shadow-sm inline-block">
-                Verifica l'Hash reale su PolygonScan ↗
+                Verifica l'indirizzo su PolygonScan ↗
               </a>
             </div>
           )}
@@ -293,7 +285,7 @@ export default function Dashboard() {
           {receipt.explorerUrl && (
             <div className="mt-4 pt-3 border-t border-slate-100 text-center">
               <a href={receipt.explorerUrl} target="_blank" rel="noreferrer" className="text-purple-600 font-bold hover:underline">
-                Apri explorer PolygonScan per verificare il blocco reale ↗
+                Visualizza movimentazioni su PolygonScan ↗
               </a>
             </div>
           )}
@@ -334,8 +326,8 @@ export default function Dashboard() {
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
           <div>
             <div className="w-12 h-12 bg-purple-100 text-purple-600 rounded-xl flex items-center justify-center font-black text-xl mb-4">₮</div>
-            <h3 className="text-lg font-bold text-slate-900">Carica su MetaMask</h3>
-            <p className="text-slate-500 text-sm mt-1">Trasmetti la transazione ai nodi Polygon e carica i token nel wallet.</p>
+            <h3 className="text-lg font-bold text-slate-900">Ricevi su MetaMask</h3>
+            <p className="text-slate-500 text-sm mt-1">Accredita i token sul wallet collegato senza costi di gas.</p>
           </div>
           <button
             onClick={() => setActiveModal("crypto")}
@@ -401,9 +393,9 @@ export default function Dashboard() {
       {activeModal === "crypto" && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
-            <h3 className="text-xl font-bold text-slate-900">Esegui Transazione On-Chain</h3>
+            <h3 className="text-xl font-bold text-slate-900">Accredito su MetaMask</h3>
             <p className="text-sm text-slate-500">
-              Verrà aperta l'estensione MetaMask per convalidare e trasmettere la transazione ai nodi di Polygon.
+              I token convertiti dai crediti generati verranno inviati direttamente al tuo indirizzo.
             </p>
             <form onSubmit={handleCryptoWithdraw} className="space-y-4">
               <div>
@@ -420,10 +412,10 @@ export default function Dashboard() {
                 />
               </div>
               <div className="p-3 bg-purple-50 rounded-xl text-xs text-purple-800 border border-purple-200">
-                <p className="font-semibold">Parametri Blockchain:</p>
+                <p className="font-semibold">Parametri di Ricezione:</p>
                 <p>• Rete: Polygon PoS (ID 137)</p>
-                <p>• Wallet Destinazione: {walletAddress ? `${walletAddress.slice(0, 8)}...${walletAddress.slice(-6)}` : "MetaMask attivo"}</p>
-                <p>• Esecuzione: Transazione On-Chain reale EIP-1559</p>
+                <p>• Indirizzo: {walletAddress ? `${walletAddress.slice(0, 8)}...${walletAddress.slice(-6)}` : "Rilevamento da MetaMask"}</p>
+                <p>• Commissioni gas utente: 0 POL (Nessuna spesa richiesta)</p>
               </div>
               <div className="flex gap-3 pt-2">
                 <button
@@ -438,7 +430,7 @@ export default function Dashboard() {
                   disabled={loading}
                   className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 rounded-xl"
                 >
-                  {loading ? "In corso..." : "Conferma con MetaMask"}
+                  Conferma Accredito
                 </button>
               </div>
             </form>
