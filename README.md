@@ -1,3 +1,2 @@
-﻿# Crypto Credit Platform
-Piattaforma Full Stack (React + Node.js + Solidity/Polygon)
-# crypto-credit-platform
+# Crypto Credit Platform
+Piattaforma full-stack per la gestione di crediti digitali su Polygon e valuta fiat.
